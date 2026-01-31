@@ -302,6 +302,7 @@ wf::region_t wf::render_pass_t::run_partial() {
   wf::region_t swap_damage = accumulated_damage;
 
   std::vector<wf::scene::render_instruction_t> instructions;
+
   if (params.instances) {
     for (auto &inst : *params.instances) {
       inst->schedule_instructions(instructions, params.target,
