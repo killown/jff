@@ -842,13 +842,15 @@ public:
    * @return True if scanout was successful, False otherwise.
    */
   bool do_direct_scanout() {
-    const bool can_scanout =
-        !output_inhibit_counter && effects->can_scanout() &&
-        postprocessing->can_scanout() &&
-        wlr_output_is_direct_scanout_allowed(output->handle) &&
-        (icc_color_transform == nullptr);
+    if (!env_allow_scanout || output_inhibit_counter || icc_color_transform) {
+      return false;
+    }
 
-    if (!can_scanout || !env_allow_scanout) {
+    if (!effects->can_scanout() || !postprocessing->can_scanout()) {
+      return false;
+    }
+
+    if (!wlr_output_is_direct_scanout_allowed(output->handle)) {
       return false;
     }
 
@@ -856,12 +858,10 @@ public:
         damage_manager->instance_manager->get_instances(), output);
 
     if (result == scene::direct_scanout::SUCCESS) {
-      LOGI("Direct scanout active");
       return true;
-    } else {
-      LOGD("Direct scanout skipped or failed");
-      return false;
     }
+
+    return false;
   }
 
   /**
