@@ -26,14 +26,11 @@ wayfire_sources = ['geometry.cpp',
                    'core/seat/input-method-relay.cpp',
                    'core/seat/input-method-popup.cpp',
                    'core/seat/bindings-repository.cpp',
-                   'core/seat/hotspot-manager.cpp',
                    'core/seat/drag-icon.cpp',
                    'core/seat/keyboard.cpp',
                    'core/seat/pointer.cpp',
                    'core/seat/cursor.cpp',
                    'core/seat/switch.cpp',
-                   'core/seat/tablet.cpp',
-                   'core/seat/touch.cpp',
                    'core/seat/seat.cpp',
 
                    'view/wlr-surface-controller.cpp',
@@ -67,7 +64,7 @@ json_flags = json.partial_dependency(compile_args: true, includes: true, link_ar
 wayfire_dependencies = [wayland_server, wlroots, xkbcommon, libinput,
                        pixman, drm, egl, glesv2, glm, wf_protos, libdl,
                        wfconfig, libinotify, backtrace, wfutils, xcb,
-                       wftouch, json_flags, udev]
+                       json_flags, udev]
 
 if conf_data.get('BUILD_WITH_IMAGEIO')
     wayfire_dependencies += [jpeg, png]

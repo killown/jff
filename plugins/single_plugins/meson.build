@@ -1,7 +1,7 @@
 plugins = [
-  'move', 'resize', 'command', 'autostart', 'vswipe', 'wrot', 'expo',
-  'switcher', 'fast-switcher', 'oswitch', 'place', 
-  'alpha', 'extra-gestures', 'preserve-output',
+  'move', 'resize', 'command', 'autostart', 'vswipe', 'expo',
+  'oswitch', 'place', 
+  'alpha', 'preserve-output',
   'wsets', 'xkb-bindings',
 ]
 
@@ -10,7 +10,7 @@ if wlroots_features['vulkan_renderer']
   plugins += 'vk-color-management'
 endif
 
-all_deps = [wlroots, pixman, wfconfig, wftouch, cairo, pango, pangocairo, json, plugin_pch_dep]
+all_deps = [wlroots, pixman, wfconfig, cairo, pango, pangocairo, json, plugin_pch_dep]
 
 extra_libs = {
     'move': [move_drag_interface],
