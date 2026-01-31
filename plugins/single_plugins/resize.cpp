@@ -8,7 +8,6 @@
 #include <wayfire/nonstd/wlroots-full.hpp>
 #include <wayfire/output.hpp>
 #include <wayfire/per-output-plugin.hpp>
-#include <wayfire/plugins/wobbly/wobbly-signal.hpp>
 #include <wayfire/signal-definitions.hpp>
 #include <wayfire/toplevel.hpp>
 #include <wayfire/view.hpp>
@@ -184,7 +183,6 @@ public:
       anchor_y += og.height;
     }
 
-    start_wobbly(view, anchor_x, anchor_y);
     wf::get_core().set_cursor(wlr_xcursor_get_resize_name((wlr_edges)edges));
 
     return true;
@@ -199,7 +197,6 @@ public:
     output->deactivate_plugin(&grab_interface);
 
     if (view) {
-      end_wobbly(view);
 
       wf::view_change_workspace_signal workspace_may_changed;
       workspace_may_changed.view = this->view;

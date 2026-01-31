@@ -1,7 +1,6 @@
 #include "wayfire/plugins/common/input-grab.hpp"
 #include "wayfire/plugins/common/util.hpp"
 #include "wayfire/plugins/ipc/ipc-activator.hpp"
-#include "wayfire/plugins/wobbly/wobbly-signal.hpp"
 #include "wayfire/render-manager.hpp"
 #include "wayfire/scene-input.hpp"
 #include "wayfire/scene.hpp"
@@ -227,7 +226,6 @@ public:
 
           for (auto &v :
                wf::move_drag::get_target_views(ev->main_view, ev->join_views)) {
-            translate_wobbly(v, local - (ev->grab_position - offset));
           }
 
           ev->grab_position = local + offset;
@@ -389,7 +387,6 @@ public:
 
     view->damage();
     // Make sure that the view is in output-local coordinates!
-    translate_wobbly(view, local_grab - ws_coords);
 
     auto [vw, vh] = output->wset()->get_workspace_grid_size();
     wf::move_drag::drag_options_t opts;
