@@ -269,6 +269,12 @@ core_drag_t::core_drag_t() {
 
 core_drag_t::~core_drag_t() = default;
 
+void core_drag_t::rebuild_wobbly(wayfire_toplevel_view view, wf::point_t grab,
+                                 wf::pointf_t relative) {
+  auto dim = wf::dimensions(wf::view_bounding_box_up_to(view, "wobbly"));
+  modify_wobbly(view, find_geometry_around(dim, grab, relative));
+}
+
 bool core_drag_t::should_start_pending_drag(wf::point_t current_position) {
   if (!tentative_grab_position.has_value()) {
     return false;
@@ -321,6 +327,13 @@ void core_drag_t::start_drag(wayfire_toplevel_view grab_view,
     wf::scene::set_node_enabled(v->get_transformed_node(), false);
     v->damage();
 
+    // Make sure that wobbly has the correct geometry from the start!
+    rebuild_wobbly(v, *tentative_grab_position,
+                   dragged.transformer->relative_grab);
+
+    // TODO: make this configurable!
+    start_wobbly_rel(v, dragged.transformer->relative_grab);
+
     priv->all_views.push_back(dragged);
     v->connect(&priv->on_view_unmap);
   }
@@ -330,7 +343,12 @@ void core_drag_t::start_drag(wayfire_toplevel_view grab_view,
   wf::scene::add_front(wf::get_core().scene(), priv->render_node);
   wf::get_core().set_cursor("grabbing");
 
+  // Set up snap-off
   if (priv->params.enable_snap_off) {
+    for (auto &v : priv->all_views) {
+      set_tiled_wobbly(v.view, true);
+    }
+
     priv->view_held_in_place = true;
   }
 }
@@ -354,11 +372,26 @@ void core_drag_t::handle_motion(wf::point_t to) {
     if (distance_to_grab_origin(to) >=
         (double)priv->params.snap_off_threshold) {
       priv->view_held_in_place = false;
+      for (auto &v : priv->all_views) {
+        set_tiled_wobbly(v.view, false);
+      }
 
       update_current_output(to);
       snap_off_signal data;
       data.focus_output = current_output;
       emit(&data);
+    }
+  }
+
+  // Update wobbly independently of the grab position.
+  // This is because while held in place, wobbly is anchored to its edges
+  // so we can still move the grabbed point without moving the view.
+  for (auto &v : priv->all_views) {
+    move_wobbly(v.view, to.x, to.y);
+    if (!priv->view_held_in_place) {
+      v.view->get_transformed_node()->begin_transform_update();
+      v.transformer->grab_position = to;
+      v.view->get_transformed_node()->end_transform_update();
     }
   }
 
@@ -404,24 +437,37 @@ void core_drag_t::handle_input_released() {
     wf::scene::set_node_enabled(v.view->get_transformed_node(), true);
     v.view->get_transformed_node()->rem_transformer<scale_around_grab_t>();
 
-    // Reset our state
-    wf::get_core().default_wm->set_view_grabbed(view, false);
-    view = nullptr;
-    priv->all_views.clear();
-    if (current_output) {
-      current_output->render->rem_effect(&priv->on_pre_frame);
-      current_output = nullptr;
-    }
+    // Reset wobbly and leave it in output-LOCAL coordinates
+    end_wobbly(v.view);
 
-    wf::get_core().set_cursor("default");
+    // Important! If the view scale was not 1.0, the wobbly model needs to be
+    // updated with the new size. Since this is an artificial resize, we need
+    // to make sure that the resize happens smoothly.
+    rebuild_wobbly(v.view, grab_position, rel_pos);
 
-    // Lastly, let the plugins handle what happens on drag end.
-    emit(&data);
-    priv->view_held_in_place = false;
-    priv->on_view_unmap.disconnect();
-
-    this->tentative_grab_position = {};
+    // Put wobbly back in output-local space, the plugins will take it from
+    // here.
+    translate_wobbly(v.view,
+                     -wf::origin(v.view->get_output()->get_layout_geometry()));
   }
+
+  // Reset our state
+  wf::get_core().default_wm->set_view_grabbed(view, false);
+  view = nullptr;
+  priv->all_views.clear();
+  if (current_output) {
+    current_output->render->rem_effect(&priv->on_pre_frame);
+    current_output = nullptr;
+  }
+
+  wf::get_core().set_cursor("default");
+
+  // Lastly, let the plugins handle what happens on drag end.
+  emit(&data);
+  priv->view_held_in_place = false;
+  priv->on_view_unmap.disconnect();
+
+  this->tentative_grab_position = {};
 }
 
 void core_drag_t::set_scale(double new_scale, double alpha) {
@@ -460,8 +506,8 @@ void core_drag_t::update_current_output(wf::output_t *output) {
 }
 
 /**
- * Move the view to the target output and put it at the coordinates of the
- * grab. Also take into account view's fullscreen and tiled state.
+ * Move the view to the target output and put it at the coordinates of the grab.
+ * Also take into account view's fullscreen and tiled state.
  *
  * Unmapped views are ignored.
  */
