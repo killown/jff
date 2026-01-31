@@ -1,7 +1,0 @@
-[Desktop Entry]
-Name=Wayfire (VULKAN)
-Exec=/home/neo/Scripts/wayfire/wayfire.sh --vulkan
-TryExec=wayfire
-Icon=
-Type=Application
-X-DesktopNames=Wayfire;wlroots
