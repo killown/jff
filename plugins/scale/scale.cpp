@@ -7,7 +7,6 @@
 #include <wayfire/per-output-plugin.hpp>
 #include <wayfire/plugins/scale-signal.hpp>
 #include <wayfire/plugins/vswitch.hpp>
-#include <wayfire/plugins/wobbly/wobbly-signal.hpp>
 #include <wayfire/render-manager.hpp>
 #include <wayfire/seat.hpp>
 #include <wayfire/signal-definitions.hpp>
@@ -208,8 +207,6 @@ public:
     view->connect(&view_geometry_changed);
     view->connect(&view_unmapped);
 
-    set_tiled_wobbly(view, true);
-
     /* signal that a transformer was added to this view */
     scale_transformer_added_signal data;
     data.view = view;
@@ -226,7 +223,6 @@ public:
     output->emit(&data);
     view->get_transformed_node()->rem_transformer(SCALE_TRANSFORMER);
     view->disconnect(&view_unmapped);
-    set_tiled_wobbly(view, false);
   }
 
   /* Remove scale transformers from all views */
@@ -1078,11 +1074,6 @@ public:
         if ((ev->focused_output == output) && can_handle_drag() &&
             !drag_helper->is_view_held_in_place()) {
           if (ev->main_view->get_output() == ev->focused_output) {
-            // View left on the same output, don't do anything
-            for (auto &v : ev->all_views) {
-              set_tiled_wobbly(v.view, true);
-            }
-
             layout_slots(get_views());
             return;
           }
