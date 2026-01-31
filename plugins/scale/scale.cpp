@@ -11,7 +11,6 @@
 #include <wayfire/render-manager.hpp>
 #include <wayfire/seat.hpp>
 #include <wayfire/signal-definitions.hpp>
-#include <wayfire/touch/touch.hpp>
 #include <wayfire/util/duration.hpp>
 #include <wayfire/view-transform.hpp>
 #include <wayfire/window-manager.hpp>
@@ -90,8 +89,7 @@ struct view_scale_data {
  */
 class wayfire_scale : public wf::per_output_plugin_instance_t,
                       public wf::keyboard_interaction_t,
-                      public wf::pointer_interaction_t,
-                      public wf::touch_interaction_t {
+                      public wf::pointer_interaction_t {
   /* helper class for optionally showing title overlays */
   scale_show_title_t show_title;
   std::vector<int> current_row_sizes;
@@ -284,26 +282,6 @@ public:
   void handle_pointer_button(const wlr_pointer_button_event &event) override {
     process_input(event.button, event.state,
                   wf::get_core().get_cursor_position());
-  }
-
-  void handle_touch_down(uint32_t, int finger_id, wf::pointf_t pos) override {
-    if (finger_id == 0) {
-      process_input(BTN_LEFT, WLR_BUTTON_PRESSED, pos);
-    }
-  }
-
-  void handle_touch_up(uint32_t, int finger_id,
-                       wf::pointf_t lift_off_position) override {
-    if (finger_id == 0) {
-      process_input(BTN_LEFT, WLR_BUTTON_RELEASED, lift_off_position);
-    }
-  }
-
-  void handle_touch_motion(uint32_t time, int finger_id,
-                           wf::pointf_t position) override {
-    if (finger_id == 0) {
-      handle_pointer_motion(position, time);
-    }
   }
 
   /* Fade all views' alpha to inactive alpha except the

@@ -14,6 +14,9 @@
 
 #include "pointing-device.hpp"
 #include "switch.hpp"
+extern "C" {
+#include <wlr/types/wlr_input_device.h>
+}
 
 static std::unique_ptr<wf::input_device_impl_t>
 create_wf_device_for_device(wlr_input_device *device) {
@@ -32,6 +35,15 @@ create_wf_device_for_device(wlr_input_device *device) {
 }
 
 void wf::input_manager_t::handle_new_input(wlr_input_device *dev) {
+  bool is_supported = (dev->type == WLR_INPUT_DEVICE_KEYBOARD ||
+                       dev->type == WLR_INPUT_DEVICE_POINTER ||
+                       dev->type == WLR_INPUT_DEVICE_SWITCH);
+
+  if (!is_supported) {
+    LOGI("Ignoring unsupported input device: ", dev->name);
+    return;
+  }
+
   LOGI("handle new input: ", dev->name);
   input_devices.push_back(create_wf_device_for_device(dev));
 
