@@ -418,7 +418,7 @@ struct postprocessing_manager_t {
    * NB: 2 buffers just aren't enough. We render to the zero buffer, and then
    * we alternately render to the second and the third. The reason: We track
    * damage. So, we need to keep the whole buffer each frame. */
-  void run_post_effects() {
+  void run_post_effects(const wf::region_t &damage = {}) {
     int cur_idx = 0;
     post_effects.for_each([&](auto post) -> void {
       int next_idx = 1 - cur_idx;
@@ -426,7 +426,9 @@ struct postprocessing_manager_t {
           (post == post_effects.back()
                ? final_target
                : post_buffers[next_idx].get_renderbuffer());
-      (*post)(post_buffers[cur_idx], dst_buffer);
+
+      // Pass damage to the effect operator if supported by the plugin
+      (*post)(post_buffers[cur_idx], dst_buffer, damage);
       cur_idx = next_idx;
     });
   }
@@ -852,7 +854,14 @@ public:
 
     auto result = scene::try_scanout_from_list(
         damage_manager->instance_manager->get_instances(), output);
-    return result == scene::direct_scanout::SUCCESS;
+
+    if (result == scene::direct_scanout::SUCCESS) {
+      LOGI("Direct scanout active");
+      return true;
+    } else {
+      LOGD("Direct scanout skipped or failed");
+      return false;
+    }
   }
 
   /**
@@ -940,9 +949,11 @@ public:
     }
 
     update_bound_output(next_frame->buffer);
+
     this->swap_damage = start_output_pass(next_frame);
 
     effects->run_effects(OUTPUT_EFFECT_OVERLAY);
+
     if (output_inhibit_counter) {
       current_pass->clear(current_pass->get_target().geometry, {0, 0, 0, 1});
     }
@@ -953,10 +964,8 @@ public:
     effects->run_effects(OUTPUT_EFFECT_PASS_DONE);
 
     if (postprocessing->post_effects.size()) {
-      swap_damage |= damage_manager->get_buffer_extents();
+      postprocessing->run_post_effects(swap_damage);
     }
-
-    postprocessing->run_post_effects();
 
     damage_manager->swap_buffers(std::move(next_frame), swap_damage);
 

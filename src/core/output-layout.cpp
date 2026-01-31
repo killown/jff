@@ -716,7 +716,6 @@ struct output_layout_output_t {
     if (!wo) {
       LOGE("Cannot find mirrored output ", current_state.mirror_from,
            " for output ", handle->name);
-
       return;
     }
 
@@ -725,10 +724,21 @@ struct output_layout_output_t {
       return;
     }
 
+    wlr_dmabuf_attributes dmabuf;
+    if (wlr_buffer_get_dmabuf(source_back_buffer, &dmabuf)) {
+      wlr_texture *texture =
+          wlr_texture_from_dmabuf(get_core().renderer, &dmabuf);
+      if (texture) {
+        render_output(texture);
+        wlr_texture_destroy(texture);
+        return;
+      }
+    }
+
     auto texture =
         wlr_texture_from_buffer(get_core().renderer, source_back_buffer);
     if (!texture) {
-      LOGE("Failed to export texture to dmabuf!");
+      LOGE("Failed to create texture from buffer!");
       return;
     }
 
