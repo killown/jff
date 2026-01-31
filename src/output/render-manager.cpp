@@ -1,516 +1,450 @@
 #include "wayfire/render-manager.hpp"
+#include "../main.hpp"
 #include "pixman.h"
 #include "wayfire/config-backend.hpp"
-#include "wayfire/scene-operations.hpp"
 #include "wayfire/core.hpp"
 #include "wayfire/debug.hpp"
 #include "wayfire/geometry.hpp"
 #include "wayfire/opengl.hpp"
+#include "wayfire/output.hpp"
 #include "wayfire/region.hpp"
+#include "wayfire/scene-operations.hpp"
 #include "wayfire/scene-render.hpp"
 #include "wayfire/scene.hpp"
 #include "wayfire/signal-definitions.hpp"
-#include "wayfire/view.hpp"
-#include "wayfire/output.hpp"
 #include "wayfire/util.hpp"
-#include "../main.hpp"
+#include "wayfire/view.hpp"
 #include "wayfire/workspace-set.hpp" // IWYU pragma: keep
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <wayfire/nonstd/reverse.hpp>
 #include <wayfire/nonstd/safe-list.hpp>
-#include <wayfire/util/log.hpp>
 #include <wayfire/nonstd/wlroots-full.hpp>
-#include <wlr/types/wlr_gamma_control_v1.h>
 #include <wayfire/output-layout.hpp>
+#include <wayfire/util/log.hpp>
+#include <wlr/types/wlr_gamma_control_v1.h>
 
-namespace wf
-{
+namespace wf {
 /**
- * swapchain_damage_manager_t is responsible for tracking the damage and managing the swapchain on the
- * given output.
+ * swapchain_damage_manager_t is responsible for tracking the damage and
+ * managing the swapchain on the given output.
  */
-struct swapchain_damage_manager_t
-{
-    wf::option_wrapper_t<bool> force_frame_sync{"workarounds/force_frame_sync"};
-    wf::wl_listener_wrapper on_needs_frame;
-    wf::wl_listener_wrapper on_damage;
-    wf::wl_listener_wrapper on_gamma_changed;
+struct swapchain_damage_manager_t {
+  wf::option_wrapper_t<bool> force_frame_sync{"workarounds/force_frame_sync"};
+  wf::wl_listener_wrapper on_needs_frame;
+  wf::wl_listener_wrapper on_damage;
+  wf::wl_listener_wrapper on_gamma_changed;
 
-    wf::region_t frame_damage;
-    wlr_output *output;
-    wlr_damage_ring damage_ring;
-    output_t *wo;
+  wf::region_t frame_damage;
+  wlr_output *output;
+  wlr_damage_ring damage_ring;
+  output_t *wo;
 
-    bool pending_gamma_lut = false;
+  bool pending_gamma_lut = false;
 
-    std::unique_ptr<wf::scene::render_instance_manager_t> instance_manager;
-    void start_rendering()
-    {
-        scene::damage_callback push_damage = [=] (wf::region_t region)
-        {
-            // Damage is pushed up to the root in root coordinate system,
-            // we need it in output-buffer-local coordinate system.
-            region += -wf::origin(wo->get_layout_geometry());
-            region  =
-                wo->render->get_target_framebuffer().framebuffer_region_from_geometry_region(region);
-            this->damage_buffer(region, true);
-        };
+  std::unique_ptr<wf::scene::render_instance_manager_t> instance_manager;
+  void start_rendering() {
+    scene::damage_callback push_damage = [=](wf::region_t region) {
+      // Damage is pushed up to the root in root coordinate system,
+      // we need it in output-buffer-local coordinate system.
+      region += -wf::origin(wo->get_layout_geometry());
+      region = wo->render->get_target_framebuffer()
+                   .framebuffer_region_from_geometry_region(region);
+      this->damage_buffer(region, true);
+    };
 
-        std::vector<scene::node_ptr> nodes;
-        nodes.push_back(wf::get_core().scene());
-        instance_manager = std::make_unique<wf::scene::render_instance_manager_t>(nodes, push_damage, wo);
-        instance_manager->set_visibility_region(wo->get_layout_geometry());
-    }
+    std::vector<scene::node_ptr> nodes;
+    nodes.push_back(wf::get_core().scene());
+    instance_manager = std::make_unique<wf::scene::render_instance_manager_t>(
+        nodes, push_damage, wo);
+    instance_manager->set_visibility_region(wo->get_layout_geometry());
+  }
 
-    swapchain_damage_manager_t(output_t *output)
-    {
-        this->output = output->handle;
-        this->wo     = output;
+  swapchain_damage_manager_t(output_t *output) {
+    this->output = output->handle;
+    this->wo = output;
 
-        output->connect(&output_mode_changed);
+    output->connect(&output_mode_changed);
 
-        wlr_damage_ring_init(&damage_ring);
-        on_needs_frame.set_callback([=] (void*) { schedule_repaint(); });
-        on_damage.set_callback([=] (void *data)
-        {
-            auto ev = static_cast<wlr_output_event_damage*>(data);
+    wlr_damage_ring_init(&damage_ring);
+    on_needs_frame.set_callback([=](void *) { schedule_repaint(); });
+    on_damage.set_callback([=](void *data) {
+      auto ev = static_cast<wlr_output_event_damage *>(data);
 
-            wf::region_t rotated{ev->damage};
-            int width, height;
-            wlr_output_transformed_resolution(this->output, &width, &height);
-            wlr_region_transform(rotated.to_pixman(), rotated.to_pixman(),
-                wlr_output_transform_invert(this->output->transform), width, height);
-            damage_buffer(rotated, true);
-        });
+      wf::region_t rotated{ev->damage};
+      int width, height;
+      wlr_output_transformed_resolution(this->output, &width, &height);
+      wlr_region_transform(rotated.to_pixman(), rotated.to_pixman(),
+                           wlr_output_transform_invert(this->output->transform),
+                           width, height);
+      damage_buffer(rotated, true);
+    });
 
-        on_gamma_changed.set_callback([=] (void *data)
-        {
-            auto event = (const wlr_gamma_control_manager_v1_set_gamma_event*)data;
-            if (event->output == this->output)
-            {
-                pending_gamma_lut = true;
-                schedule_repaint();
-            }
-        });
+    on_gamma_changed.set_callback([=](void *data) {
+      auto event = (const wlr_gamma_control_manager_v1_set_gamma_event *)data;
+      if (event->output == this->output) {
+        pending_gamma_lut = true;
+        schedule_repaint();
+      }
+    });
 
-        on_needs_frame.connect(&output->handle->events.needs_frame);
-        on_damage.connect(&output->handle->events.damage);
-        on_gamma_changed.connect(&wf::get_core().protocols.gamma_v1->events.set_gamma);
-    }
+    on_needs_frame.connect(&output->handle->events.needs_frame);
+    on_damage.connect(&output->handle->events.damage);
+    on_gamma_changed.connect(
+        &wf::get_core().protocols.gamma_v1->events.set_gamma);
+  }
 
-    ~swapchain_damage_manager_t()
-    {
-        wlr_damage_ring_finish(&damage_ring);
-    }
+  ~swapchain_damage_manager_t() { wlr_damage_ring_finish(&damage_ring); }
 
-    wf::signal::connection_t<wf::output_configuration_changed_signal>
-    output_mode_changed = [=] (wf::output_configuration_changed_signal *ev)
-    {
-        if (!ev || !ev->changed_fields)
-        {
-            return;
+  wf::signal::connection_t<wf::output_configuration_changed_signal>
+      output_mode_changed = [=](wf::output_configuration_changed_signal *ev) {
+        if (!ev || !ev->changed_fields) {
+          return;
         }
 
         schedule_repaint();
         instance_manager->set_visibility_region(wo->get_layout_geometry());
-    };
+      };
 
-    /**
-     * Damage the given region
-     */
-    void damage_buffer(const wf::region_t& region, bool repaint)
-    {
-        if (region.empty())
-        {
-            return;
-        }
-
-        frame_damage |= region;
-        wlr_damage_ring_add(&damage_ring, region.to_pixman());
-        if (repaint)
-        {
-            schedule_repaint();
-        }
+  /**
+   * Damage the given region
+   */
+  void damage_buffer(const wf::region_t &region, bool repaint) {
+    if (region.empty()) {
+      return;
     }
 
-    void damage_buffer(const wf::geometry_t& box, bool repaint)
-    {
-        if ((box.width <= 0) || (box.height <= 0))
-        {
-            return;
-        }
+    frame_damage |= region;
+    wlr_damage_ring_add(&damage_ring, region.to_pixman());
+    if (repaint) {
+      schedule_repaint();
+    }
+  }
 
-        /* Wlroots expects damage after scaling */
-        frame_damage |= box;
-        wlr_damage_ring_add_box(&damage_ring, &box);
-        if (repaint)
-        {
-            schedule_repaint();
-        }
+  void damage_buffer(const wf::geometry_t &box, bool repaint) {
+    if ((box.width <= 0) || (box.height <= 0)) {
+      return;
     }
 
-    int constant_redraw_counter = 0;
-    void set_redraw_always(bool always)
+    /* Wlroots expects damage after scaling */
+    frame_damage |= box;
+    wlr_damage_ring_add_box(&damage_ring, &box);
+    if (repaint) {
+      schedule_repaint();
+    }
+  }
+
+  int constant_redraw_counter = 0;
+  void set_redraw_always(bool always) {
+    constant_redraw_counter += (always ? 1 : -1);
+    if (constant_redraw_counter > 1) /* no change, exit */
     {
-        constant_redraw_counter += (always ? 1 : -1);
-        if (constant_redraw_counter > 1) /* no change, exit */
-        {
-            return;
-        }
-
-        if (constant_redraw_counter < 0)
-        {
-            LOGE("constant_redraw_counter got below 0!");
-            constant_redraw_counter = 0;
-
-            return;
-        }
-
-        schedule_repaint();
+      return;
     }
 
-    // A struct which contains the necessary structures for painting one frame
-    struct frame_object_t
-    {
-        wlr_output_state state;
-        wlr_buffer *buffer = NULL;
-        int buffer_age;
+    if (constant_redraw_counter < 0) {
+      LOGE("constant_redraw_counter got below 0!");
+      constant_redraw_counter = 0;
 
-        frame_object_t()
-        {
-            wlr_output_state_init(&state);
-        }
-
-        ~frame_object_t()
-        {
-            wlr_output_state_finish(&state);
-        }
-
-        frame_object_t(const frame_object_t&) = delete;
-        frame_object_t(frame_object_t&&) = delete;
-        frame_object_t& operator =(const frame_object_t&) = delete;
-        frame_object_t& operator =(frame_object_t&&) = delete;
-    };
-
-    bool acquire_next_swapchain_buffer(frame_object_t& frame)
-    {
-        if (!wlr_output_configure_primary_swapchain(output, &frame.state, &output->swapchain))
-        {
-            LOGE("Failed to configure primary output swapchain for output ", nonull(output->name));
-            return false;
-        }
-
-        frame.buffer = wlr_swapchain_acquire(output->swapchain);
-        if (!frame.buffer)
-        {
-            LOGE("Failed to acquire buffer from the output swapchain!");
-            return false;
-        }
-
-        return true;
+      return;
     }
 
-    bool try_apply_gamma(frame_object_t& next_frame)
-    {
-        if (!pending_gamma_lut)
-        {
-            return true;
-        }
+    schedule_repaint();
+  }
 
-        pending_gamma_lut = false;
-        auto gamma_control =
-            wlr_gamma_control_manager_v1_get_control(wf::get_core().protocols.gamma_v1, output);
+  // A struct which contains the necessary structures for painting one frame
+  struct frame_object_t {
+    wlr_output_state state;
+    wlr_buffer *buffer = NULL;
+    int buffer_age;
 
-        if (!wlr_gamma_control_v1_apply(gamma_control, &next_frame.state))
-        {
-            LOGE("Failed to apply gamma to output state!");
-            return false;
-        }
+    frame_object_t() { wlr_output_state_init(&state); }
 
-        if (!wlr_output_test_state(output, &next_frame.state))
-        {
-            wlr_gamma_control_v1_send_failed_and_destroy(gamma_control);
-        }
+    ~frame_object_t() { wlr_output_state_finish(&state); }
 
-        return true;
+    frame_object_t(const frame_object_t &) = delete;
+    frame_object_t(frame_object_t &&) = delete;
+    frame_object_t &operator=(const frame_object_t &) = delete;
+    frame_object_t &operator=(frame_object_t &&) = delete;
+  };
+
+  bool acquire_next_swapchain_buffer(frame_object_t &frame) {
+    if (!wlr_output_configure_primary_swapchain(output, &frame.state,
+                                                &output->swapchain)) {
+      LOGE("Failed to configure primary output swapchain for output ",
+           nonull(output->name));
+      return false;
     }
 
-    bool force_next_frame = false;
-    /**
-     * Start rendering a new frame.
-     * If the operation could not be started, or if a new frame is not needed, the function returns false.
-     * If the operation succeeds, true is returned, and the output (E)GL context is bound.
-     */
-    std::unique_ptr<frame_object_t> start_frame()
-    {
-        auto buffer_extents = this->get_buffer_extents();
-        pixman_region32_intersect_rect(&damage_ring.current, &damage_ring.current,
-            buffer_extents.x, buffer_extents.y, buffer_extents.width, buffer_extents.height);
-        const bool needs_swap = force_next_frame | output->needs_frame |
-            pixman_region32_not_empty(&damage_ring.current) | (constant_redraw_counter > 0);
-        force_next_frame = false;
-
-        if (!needs_swap)
-        {
-            return {};
-        }
-
-        auto next_frame = std::make_unique<frame_object_t>();
-        next_frame->state.committed |= WLR_OUTPUT_STATE_DAMAGE;
-
-        if (!try_apply_gamma(*next_frame))
-        {
-            return {};
-        }
-
-        if (!acquire_next_swapchain_buffer(*next_frame))
-        {
-            return {};
-        }
-
-        // Accumulate damage now, when we are sure we will render the frame.
-        // Doing this earlier may mean that the damage from the previous frames
-        // creeps into the current frame damage, if we had skipped a frame.
-        accumulate_damage(next_frame.get());
-
-        return next_frame;
+    frame.buffer = wlr_swapchain_acquire(output->swapchain);
+    if (!frame.buffer) {
+      LOGE("Failed to acquire buffer from the output swapchain!");
+      return false;
     }
 
-    void swap_buffers(std::unique_ptr<frame_object_t> next_frame, const wf::region_t& swap_damage)
-    {
-        /* If force frame sync option is set, call glFinish to block until
-         * the GPU finishes rendering. This can work around some driver
-         * bugs, but may cause more resource usage. */
-        if (force_frame_sync)
-        {
-            wf::gles::run_in_context_if_gles([&]
-            {
-                GL_CALL(glFinish());
-            });
-        }
+    return true;
+  }
 
-        frame_damage.clear();
-        wlr_output_state_set_buffer(&next_frame->state, next_frame->buffer);
-        wlr_output_state_set_damage(&next_frame->state, swap_damage.to_pixman());
-        wlr_buffer_unlock(next_frame->buffer);
-
-        if (!wlr_output_test_state(output, &next_frame->state))
-        {
-            LOGE("Output test failed!");
-            return;
-        }
-
-        if (!wlr_output_commit_state(output, &next_frame->state))
-        {
-            LOGE("Output commit failed!");
-            return;
-        }
+  bool try_apply_gamma(frame_object_t &next_frame) {
+    if (!pending_gamma_lut) {
+      return true;
     }
 
-    /**
-     * Accumulate damage from last frame.
-     * Needs to be called after make_current()
-     */
-    void accumulate_damage(frame_object_t *next_frame)
-    {
-        wf::region_t ring_damage;
-        wlr_damage_ring_rotate_buffer(&damage_ring, next_frame->buffer, ring_damage.to_pixman());
+    pending_gamma_lut = false;
+    auto gamma_control = wlr_gamma_control_manager_v1_get_control(
+        wf::get_core().protocols.gamma_v1, output);
 
-        frame_damage |= ring_damage;
-        if (runtime_config.no_damage_track)
-        {
-            frame_damage |= get_buffer_extents();
-        }
+    if (!wlr_gamma_control_v1_apply(gamma_control, &next_frame.state)) {
+      LOGE("Failed to apply gamma to output state!");
+      return false;
     }
 
-    /**
-     * Return the damage that has been scheduled for the next frame up to now,
-     * or, if in a repaint, the damage for the current frame
-     */
-    wf::region_t get_scheduled_damage(const wf::render_target_t& target)
-    {
-        return target.geometry_region_from_framebuffer_region(frame_damage) & target.geometry;
+    if (!wlr_output_test_state(output, &next_frame.state)) {
+      wlr_gamma_control_v1_send_failed_and_destroy(gamma_control);
     }
 
-    /**
-     * Schedule a frame for the output
-     */
-    void schedule_repaint()
-    {
-        wlr_output_schedule_frame(output);
-        force_next_frame = true;
+    return true;
+  }
+
+  bool force_next_frame = false;
+  /**
+   * Start rendering a new frame.
+   * If the operation could not be started, or if a new frame is not needed, the
+   * function returns false. If the operation succeeds, true is returned, and
+   * the output (E)GL context is bound.
+   */
+  std::unique_ptr<frame_object_t> start_frame() {
+    auto buffer_extents = this->get_buffer_extents();
+    pixman_region32_intersect_rect(&damage_ring.current, &damage_ring.current,
+                                   buffer_extents.x, buffer_extents.y,
+                                   buffer_extents.width, buffer_extents.height);
+    const bool needs_swap = force_next_frame | output->needs_frame |
+                            pixman_region32_not_empty(&damage_ring.current) |
+                            (constant_redraw_counter > 0);
+    force_next_frame = false;
+
+    if (!needs_swap) {
+      return {};
     }
 
-    /**
-     * Get the full size of the buffer for damage tracking in output-buffer-local coordinate system
-     */
-    wlr_box get_buffer_extents() const
-    {
-        return {0, 0, output->width, output->height};
+    auto next_frame = std::make_unique<frame_object_t>();
+    next_frame->state.committed |= WLR_OUTPUT_STATE_DAMAGE;
+
+    if (!try_apply_gamma(*next_frame)) {
+      return {};
     }
 
-    /**
-     * Same as render_manager::get_ws_box()
-     */
-    wlr_box get_ws_box(wf::point_t ws) const
-    {
-        auto current = wo->wset()->get_current_workspace();
-
-        wlr_box box = wo->get_relative_geometry();
-        box.x = (ws.x - current.x) * box.width;
-        box.y = (ws.y - current.y) * box.height;
-
-        return box;
+    if (!acquire_next_swapchain_buffer(*next_frame)) {
+      return {};
     }
 
-    /**
-     * Same as render_manager::damage_whole()
-     */
-    void damage_whole()
-    {
-        damage_buffer(get_buffer_extents(), true);
+    // Accumulate damage now, when we are sure we will render the frame.
+    // Doing this earlier may mean that the damage from the previous frames
+    // creeps into the current frame damage, if we had skipped a frame.
+    accumulate_damage(next_frame.get());
+
+    return next_frame;
+  }
+
+  void swap_buffers(std::unique_ptr<frame_object_t> next_frame,
+                    const wf::region_t &swap_damage) {
+    /* If force frame sync option is set, call glFinish to block until
+     * the GPU finishes rendering. This can work around some driver
+     * bugs, but may cause more resource usage. */
+    if (force_frame_sync) {
+      wf::gles::run_in_context_if_gles([&] { GL_CALL(glFinish()); });
     }
 
-    wf::wl_idle_call idle_damage;
-    /**
-     * Same as render_manager::damage_whole_idle()
-     */
-    void damage_whole_idle()
-    {
-        damage_whole();
-        if (!idle_damage.is_connected())
-        {
-            idle_damage.run_once([&] () { damage_whole(); });
-        }
+    frame_damage.clear();
+    wlr_output_state_set_buffer(&next_frame->state, next_frame->buffer);
+    wlr_output_state_set_damage(&next_frame->state, swap_damage.to_pixman());
+    wlr_buffer_unlock(next_frame->buffer);
+
+    if (!wlr_output_test_state(output, &next_frame->state)) {
+      LOGE("Output test failed!");
+      return;
     }
+
+    if (!wlr_output_commit_state(output, &next_frame->state)) {
+      LOGE("Output commit failed!");
+      return;
+    }
+  }
+
+  /**
+   * Accumulate damage from last frame.
+   * Needs to be called after make_current()
+   */
+  void accumulate_damage(frame_object_t *next_frame) {
+    wf::region_t ring_damage;
+    wlr_damage_ring_rotate_buffer(&damage_ring, next_frame->buffer,
+                                  ring_damage.to_pixman());
+
+    frame_damage |= ring_damage;
+    if (runtime_config.no_damage_track) {
+      frame_damage |= get_buffer_extents();
+    }
+  }
+
+  /**
+   * Return the damage that has been scheduled for the next frame up to now,
+   * or, if in a repaint, the damage for the current frame
+   */
+  wf::region_t get_scheduled_damage(const wf::render_target_t &target) {
+    return target.geometry_region_from_framebuffer_region(frame_damage) &
+           target.geometry;
+  }
+
+  /**
+   * Schedule a frame for the output
+   */
+  void schedule_repaint() {
+    wlr_output_schedule_frame(output);
+    force_next_frame = true;
+  }
+
+  /**
+   * Get the full size of the buffer for damage tracking in output-buffer-local
+   * coordinate system
+   */
+  wlr_box get_buffer_extents() const {
+    return {0, 0, output->width, output->height};
+  }
+
+  /**
+   * Same as render_manager::get_ws_box()
+   */
+  wlr_box get_ws_box(wf::point_t ws) const {
+    auto current = wo->wset()->get_current_workspace();
+
+    wlr_box box = wo->get_relative_geometry();
+    box.x = (ws.x - current.x) * box.width;
+    box.y = (ws.y - current.y) * box.height;
+
+    return box;
+  }
+
+  /**
+   * Same as render_manager::damage_whole()
+   */
+  void damage_whole() { damage_buffer(get_buffer_extents(), true); }
+
+  wf::wl_idle_call idle_damage;
+  /**
+   * Same as render_manager::damage_whole_idle()
+   */
+  void damage_whole_idle() {
+    damage_whole();
+    if (!idle_damage.is_connected()) {
+      idle_damage.run_once([&]() { damage_whole(); });
+    }
+  }
 };
 
 /**
  * Very simple class to manage effect hooks
  */
-struct effect_hook_manager_t
-{
-    using effect_container_t = wf::safe_list_t<effect_hook_t*>;
-    effect_container_t effects[OUTPUT_EFFECT_TOTAL];
+struct effect_hook_manager_t {
+  using effect_container_t = wf::safe_list_t<effect_hook_t *>;
+  effect_container_t effects[OUTPUT_EFFECT_TOTAL];
 
-    void add_effect(effect_hook_t *hook, output_effect_type_t type)
-    {
-        effects[type].push_back(hook);
-    }
+  void add_effect(effect_hook_t *hook, output_effect_type_t type) {
+    effects[type].push_back(hook);
+  }
 
-    bool can_scanout() const
-    {
-        return effects[OUTPUT_EFFECT_OVERLAY].size() == 0 &&
-               effects[OUTPUT_EFFECT_POST].size() == 0;
-    }
+  bool can_scanout() const {
+    return effects[OUTPUT_EFFECT_OVERLAY].size() == 0 &&
+           effects[OUTPUT_EFFECT_POST].size() == 0;
+  }
 
-    void rem_effect(effect_hook_t *hook)
-    {
-        for (int i = 0; i < OUTPUT_EFFECT_TOTAL; i++)
-        {
-            effects[i].remove_all(hook);
-        }
+  void rem_effect(effect_hook_t *hook) {
+    for (int i = 0; i < OUTPUT_EFFECT_TOTAL; i++) {
+      effects[i].remove_all(hook);
     }
+  }
 
-    void run_effects(output_effect_type_t type)
-    {
-        effects[type].for_each([] (auto effect)
-        { (*effect)(); });
-    }
+  void run_effects(output_effect_type_t type) {
+    effects[type].for_each([](auto effect) { (*effect)(); });
+  }
 };
 
 /**
  * A class to manage and run postprocessing effects
  */
-struct postprocessing_manager_t
-{
-    using post_container_t = wf::safe_list_t<post_hook_t*>;
-    post_container_t post_effects;
-    wf::auxilliary_buffer_t post_buffers[2];
-    /* Buffer to which other operations render to */
-    static constexpr uint32_t default_out_buffer = 0;
+struct postprocessing_manager_t {
+  using post_container_t = wf::safe_list_t<post_hook_t *>;
+  post_container_t post_effects;
+  wf::auxilliary_buffer_t post_buffers[2];
+  /* Buffer to which other operations render to */
+  static constexpr uint32_t default_out_buffer = 0;
 
-    output_t *output;
-    uint32_t output_width, output_height;
-    postprocessing_manager_t(output_t *output)
-    {
-        this->output = output;
+  output_t *output;
+  uint32_t output_width, output_height;
+  postprocessing_manager_t(output_t *output) { this->output = output; }
+
+  wf::render_buffer_t final_target;
+  void set_current_buffer(wlr_buffer *buffer) {
+    final_target =
+        wf::render_buffer_t{buffer, wf::dimensions_t{output->handle->width,
+                                                     output->handle->height}};
+  }
+
+  void allocate(int width, int height) {
+    if (post_effects.size() == 0) {
+      return;
     }
 
-    wf::render_buffer_t final_target;
-    void set_current_buffer(wlr_buffer *buffer)
-    {
-        final_target = wf::render_buffer_t{
-            buffer,
-            wf::dimensions_t{output->handle->width, output->handle->height}
-        };
+    output_width = width;
+    output_height = height;
+    for (auto &buffer : post_buffers) {
+      buffer.allocate({width, height});
     }
+  }
 
-    void allocate(int width, int height)
-    {
-        if (post_effects.size() == 0)
-        {
-            return;
-        }
+  void add_post(post_hook_t *hook) {
+    post_effects.push_back(hook);
+    output->render->damage_whole_idle();
+  }
 
-        output_width  = width;
-        output_height = height;
-        for (auto& buffer : post_buffers)
-        {
-            buffer.allocate({width, height});
-        }
-    }
+  void rem_post(post_hook_t *hook) {
+    post_effects.remove_all(hook);
+    output->render->damage_whole_idle();
+  }
 
-    void add_post(post_hook_t *hook)
-    {
-        post_effects.push_back(hook);
-        output->render->damage_whole_idle();
-    }
+  /* Run all postprocessing effects, rendering to alternating buffers and
+   * finally to the screen.
+   *
+   * NB: 2 buffers just aren't enough. We render to the zero buffer, and then
+   * we alternately render to the second and the third. The reason: We track
+   * damage. So, we need to keep the whole buffer each frame. */
+  void run_post_effects() {
+    int cur_idx = 0;
+    post_effects.for_each([&](auto post) -> void {
+      int next_idx = 1 - cur_idx;
+      wf::render_buffer_t dst_buffer =
+          (post == post_effects.back()
+               ? final_target
+               : post_buffers[next_idx].get_renderbuffer());
+      (*post)(post_buffers[cur_idx], dst_buffer);
+      cur_idx = next_idx;
+    });
+  }
 
-    void rem_post(post_hook_t *hook)
-    {
-        post_effects.remove_all(hook);
-        output->render->damage_whole_idle();
-    }
+  wf::render_target_t get_target_framebuffer() const {
+    wf::render_target_t fb{
+        post_effects.size() > 0
+            ? post_buffers[default_out_buffer].get_renderbuffer()
+            : final_target};
 
-    /* Run all postprocessing effects, rendering to alternating buffers and
-     * finally to the screen.
-     *
-     * NB: 2 buffers just aren't enough. We render to the zero buffer, and then
-     * we alternately render to the second and the third. The reason: We track
-     * damage. So, we need to keep the whole buffer each frame. */
-    void run_post_effects()
-    {
-        int cur_idx = 0;
-        post_effects.for_each([&] (auto post) -> void
-        {
-            int next_idx = 1 - cur_idx;
-            wf::render_buffer_t dst_buffer = (post == post_effects.back() ?
-                final_target : post_buffers[next_idx].get_renderbuffer());
-            (*post)(post_buffers[cur_idx], dst_buffer);
-            cur_idx = next_idx;
-        });
-    }
+    fb.geometry = output->get_relative_geometry();
+    fb.wl_transform = output->handle->transform;
+    fb.scale = output->handle->scale;
 
-    wf::render_target_t get_target_framebuffer() const
-    {
-        wf::render_target_t fb{
-            post_effects.size() > 0 ? post_buffers[default_out_buffer].get_renderbuffer() : final_target
-        };
+    return fb;
+  }
 
-        fb.geometry     = output->get_relative_geometry();
-        fb.wl_transform = output->handle->transform;
-        fb.scale = output->handle->scale;
-
-        return fb;
-    }
-
-    bool can_scanout() const
-    {
-        return post_effects.size() == 0;
-    }
+  bool can_scanout() const { return post_effects.size() == 0; }
 };
 
 /**
@@ -518,117 +452,99 @@ struct postprocessing_manager_t
  * It keeps at most 3 depth buffers at any given time to conserve
  * resources.
  */
-class depth_buffer_manager_t
-{
-  public:
-    void ensure_depth_buffer(int fb, int width, int height)
-    {
-        /* If the backend doesn't have its own framebuffer, then the
-         * framebuffer is created with a depth buffer. */
-        if (required_counter <= 0)
-        {
-            return;
-        }
-
-        attach_buffer(fb, width, height);
+class depth_buffer_manager_t {
+public:
+  void ensure_depth_buffer(int fb, int width, int height) {
+    /* If the backend doesn't have its own framebuffer, then the
+     * framebuffer is created with a depth buffer. */
+    if (required_counter <= 0) {
+      return;
     }
 
-    void frame_done()
-    {
-        if (currently_attached_fb == INVALID_FB)
-        {
-            return;
-        }
+    attach_buffer(fb, width, height);
+  }
 
-        wf::gles::run_in_context_if_gles([&]
-        {
-            // Detach depth buffer
-            GL_CALL(glBindFramebuffer(GL_FRAMEBUFFER, currently_attached_fb));
-            GL_CALL(glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
-                GL_TEXTURE_2D, 0, 0));
-            GL_CALL(glBindFramebuffer(GL_FRAMEBUFFER, 0));
-        });
-
-        currently_attached_fb = INVALID_FB;
+  void frame_done() {
+    if (currently_attached_fb == INVALID_FB) {
+      return;
     }
 
-    void set_required(bool require)
-    {
-        required_counter += require ? 1 : -1;
-        if (required_counter <= 0)
-        {
-            free_buffer();
-        }
+    wf::gles::run_in_context_if_gles([&] {
+      // Detach depth buffer
+      GL_CALL(glBindFramebuffer(GL_FRAMEBUFFER, currently_attached_fb));
+      GL_CALL(glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
+                                     GL_TEXTURE_2D, 0, 0));
+      GL_CALL(glBindFramebuffer(GL_FRAMEBUFFER, 0));
+    });
+
+    currently_attached_fb = INVALID_FB;
+  }
+
+  void set_required(bool require) {
+    required_counter += require ? 1 : -1;
+    if (required_counter <= 0) {
+      free_buffer();
+    }
+  }
+
+  depth_buffer_manager_t() = default;
+
+  ~depth_buffer_manager_t() { free_buffer(); }
+
+  depth_buffer_manager_t(const depth_buffer_manager_t &) = delete;
+  depth_buffer_manager_t(depth_buffer_manager_t &&) = delete;
+  depth_buffer_manager_t &operator=(const depth_buffer_manager_t &) = delete;
+  depth_buffer_manager_t &operator=(depth_buffer_manager_t &&) = delete;
+
+private:
+  int required_counter = 0;
+  static constexpr int INVALID_FB = 0;
+  static constexpr int INVALID_TEX = 0;
+  int currently_attached_fb = INVALID_FB;
+
+  struct depth_buffer_t {
+    GLuint tex = INVALID_TEX;
+    int width = 0;
+    int height = 0;
+  } buffer;
+
+  void free_buffer() {
+    currently_attached_fb = INVALID_FB;
+    if (buffer.tex != INVALID_TEX) {
+      wf::gles::run_in_context([&] {
+        GL_CALL(glDeleteTextures(1, &buffer.tex));
+        buffer.tex = INVALID_TEX;
+      });
+    }
+  }
+
+  void attach_buffer(int fb, int width, int height) {
+    if ((buffer.width != width) || (buffer.height != height)) {
+      free_buffer();
+      wf::gles::run_in_context_if_gles([&] {
+        GL_CALL(glGenTextures(1, &buffer.tex));
+        GL_CALL(glBindTexture(GL_TEXTURE_2D, buffer.tex));
+        GL_CALL(glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT, width,
+                             height, 0, GL_DEPTH_COMPONENT, GL_UNSIGNED_INT,
+                             NULL));
+        GL_CALL(glBindTexture(GL_TEXTURE_2D, 0));
+      });
+
+      buffer.width = width;
+      buffer.height = height;
     }
 
-    depth_buffer_manager_t() = default;
+    wf::gles::run_in_context_if_gles([&] {
+      GL_CALL(glBindTexture(GL_TEXTURE_2D, buffer.tex));
+      GL_CALL(glBindFramebuffer(GL_FRAMEBUFFER, fb));
+      GL_CALL(glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
+                                     GL_TEXTURE_2D, buffer.tex, 0));
+      GL_CALL(glBindTexture(GL_TEXTURE_2D, 0));
+      GL_CALL(glBindFramebuffer(GL_FRAMEBUFFER, 0));
 
-    ~depth_buffer_manager_t()
-    {
-        free_buffer();
-    }
-
-    depth_buffer_manager_t(const depth_buffer_manager_t &) = delete;
-    depth_buffer_manager_t(depth_buffer_manager_t &&) = delete;
-    depth_buffer_manager_t& operator =(const depth_buffer_manager_t&) = delete;
-    depth_buffer_manager_t& operator =(depth_buffer_manager_t&&) = delete;
-
-  private:
-    int required_counter = 0;
-    static constexpr int INVALID_FB  = 0;
-    static constexpr int INVALID_TEX = 0;
-    int currently_attached_fb = INVALID_FB;
-
-    struct depth_buffer_t
-    {
-        GLuint tex = INVALID_TEX;
-        int width  = 0;
-        int height = 0;
-    } buffer;
-
-    void free_buffer()
-    {
-        currently_attached_fb = INVALID_FB;
-        if (buffer.tex != INVALID_TEX)
-        {
-            wf::gles::run_in_context([&]
-            {
-                GL_CALL(glDeleteTextures(1, &buffer.tex));
-                buffer.tex = INVALID_TEX;
-            });
-        }
-    }
-
-    void attach_buffer(int fb, int width, int height)
-    {
-        if ((buffer.width != width) || (buffer.height != height))
-        {
-            free_buffer();
-            wf::gles::run_in_context_if_gles([&]
-            {
-                GL_CALL(glGenTextures(1, &buffer.tex));
-                GL_CALL(glBindTexture(GL_TEXTURE_2D, buffer.tex));
-                GL_CALL(glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT,
-                    width, height, 0, GL_DEPTH_COMPONENT, GL_UNSIGNED_INT, NULL));
-                GL_CALL(glBindTexture(GL_TEXTURE_2D, 0));
-            });
-
-            buffer.width  = width;
-            buffer.height = height;
-        }
-
-        wf::gles::run_in_context_if_gles([&]
-        {
-            GL_CALL(glBindTexture(GL_TEXTURE_2D, buffer.tex));
-            GL_CALL(glBindFramebuffer(GL_FRAMEBUFFER, fb));
-            GL_CALL(glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
-                GL_TEXTURE_2D, buffer.tex, 0));
-            GL_CALL(glBindTexture(GL_TEXTURE_2D, 0));
-            GL_CALL(glBindFramebuffer(GL_FRAMEBUFFER, 0));
-
-            currently_attached_fb = fb;
-        });
-    }
+      currently_attached_fb = fb;
+    });
+  }
 };
 
 /**
@@ -642,7 +558,8 @@ class depth_buffer_manager_t
  * application contents, otherwise, the changes are visible after 1 more frame.
  *
  * The repaint delay however should be chosen so that Wayfire's own rendering
- * starts early enough for the next vblank, otherwise, the framerate will suffer.
+ * starts early enough for the next vblank, otherwise, the framerate will
+ * suffer.
  *
  * Calculating the maximal time Wayfire needs for rendering is very hard, and
  * and can change depending on active plugins, number of opened windows, etc.
@@ -660,630 +577,525 @@ class depth_buffer_manager_t
  * `increase_window` is doubled, otherwise, it is halved
  * (but it must stay between `MIN_INCREASE_WINDOW` and `MAX_INCREASE_WINDOW`).
  */
-struct repaint_delay_manager_t
-{
-    repaint_delay_manager_t(wf::output_t *output)
-    {
-        on_present.set_callback([&] (void *data)
-        {
-            auto ev = static_cast<wlr_output_event_present*>(data);
-            this->refresh_nsec = ev->refresh;
-        });
-        on_present.connect(&output->handle->events.present);
+struct repaint_delay_manager_t {
+  repaint_delay_manager_t(wf::output_t *output) {
+    on_present.set_callback([&](void *data) {
+      auto ev = static_cast<wlr_output_event_present *>(data);
+      this->refresh_nsec = ev->refresh;
+    });
+    on_present.connect(&output->handle->events.present);
+  }
+
+  /**
+   * The next frame will be skipped.
+   */
+  void skip_frame() {
+    // Mark last frame as invalid, because we don't know how much time
+    // will pass until next frame
+    last_pageflip = -1;
+  }
+
+  /**
+   * Starting a new frame.
+   */
+  void start_frame() {
+    if (last_pageflip == -1) {
+      last_pageflip = get_current_time();
+      return;
     }
 
-    /**
-     * The next frame will be skipped.
-     */
-    void skip_frame()
-    {
-        // Mark last frame as invalid, because we don't know how much time
-        // will pass until next frame
-        last_pageflip = -1;
+    const int64_t refresh = this->refresh_nsec / 1e6;
+    const int64_t on_time_thresh = refresh * 1.5;
+    const int64_t last_frame_len = get_current_time() - last_pageflip;
+    if (last_frame_len <= on_time_thresh) {
+      // We rendered last frame on time
+      if (get_current_time() - last_increase >= increase_window) {
+        increase_window = clamp(int64_t(increase_window * 0.75),
+                                MIN_INCREASE_WINDOW, MAX_INCREASE_WINDOW);
+        update_delay(+1);
+        reset_increase_timer();
+
+        // If we manage the next few frames, then we have reached a new
+        // stable state
+        expand_inc_window_on_miss = 20;
+      } else {
+        --expand_inc_window_on_miss;
+      }
+
+      // Stop exponential decrease
+      consecutive_decrease = 1;
+    } else {
+      // We missed last frame.
+      update_delay(-consecutive_decrease);
+      // Next decrease should be faster
+      consecutive_decrease = clamp(consecutive_decrease * 2, 1, 32);
+
+      // Next increase should be tried after a longer interval
+      if (expand_inc_window_on_miss >= 0) {
+        increase_window = clamp(increase_window * 2, MIN_INCREASE_WINDOW,
+                                MAX_INCREASE_WINDOW);
+      }
+
+      reset_increase_timer();
     }
 
-    /**
-     * Starting a new frame.
-     */
-    void start_frame()
-    {
-        if (last_pageflip == -1)
-        {
-            last_pageflip = get_current_time();
-            return;
-        }
+    last_pageflip = get_current_time();
+  }
 
-        const int64_t refresh = this->refresh_nsec / 1e6;
-        const int64_t on_time_thresh = refresh * 1.5;
-        const int64_t last_frame_len = get_current_time() - last_pageflip;
-        if (last_frame_len <= on_time_thresh)
-        {
-            // We rendered last frame on time
-            if (get_current_time() - last_increase >= increase_window)
-            {
-                increase_window = clamp(int64_t(increase_window * 0.75),
-                    MIN_INCREASE_WINDOW, MAX_INCREASE_WINDOW);
-                update_delay(+1);
-                reset_increase_timer();
+  /**
+   * @return The delay in milliseconds for the current frame.
+   */
+  int get_delay() { return delay; }
 
-                // If we manage the next few frames, then we have reached a new
-                // stable state
-                expand_inc_window_on_miss = 20;
-            } else
-            {
-                --expand_inc_window_on_miss;
-            }
+private:
+  int delay = 0;
 
-            // Stop exponential decrease
-            consecutive_decrease = 1;
-        } else
-        {
-            // We missed last frame.
-            update_delay(-consecutive_decrease);
-            // Next decrease should be faster
-            consecutive_decrease = clamp(consecutive_decrease * 2, 1, 32);
+  void update_delay(int delta) {
+    int config_delay =
+        std::max(0, (int)(this->refresh_nsec / 1e6) - max_render_time);
 
-            // Next increase should be tried after a longer interval
-            if (expand_inc_window_on_miss >= 0)
-            {
-                increase_window = clamp(increase_window * 2,
-                    MIN_INCREASE_WINDOW, MAX_INCREASE_WINDOW);
-            }
-
-            reset_increase_timer();
-        }
-
-        last_pageflip = get_current_time();
+    int min = 0;
+    int max = config_delay;
+    if (max_render_time == -1) {
+      max = 0;
+    } else if (!dynamic_delay) {
+      min = config_delay;
+      max = config_delay;
     }
 
-    /**
-     * @return The delay in milliseconds for the current frame.
-     */
-    int get_delay()
-    {
-        return delay;
-    }
+    delay = clamp(delay + delta, min, max);
+  }
 
-  private:
-    int delay = 0;
+  void reset_increase_timer() { last_increase = get_current_time(); }
 
-    void update_delay(int delta)
-    {
-        int config_delay = std::max(0,
-            (int)(this->refresh_nsec / 1e6) - max_render_time);
+  static constexpr int64_t MIN_INCREASE_WINDOW = 200;    // 200 ms
+  static constexpr int64_t MAX_INCREASE_WINDOW = 30'000; // 30s
+  int64_t increase_window = MIN_INCREASE_WINDOW;
+  int64_t last_increase = 0;
 
-        int min = 0;
-        int max = config_delay;
-        if (max_render_time == -1)
-        {
-            max = 0;
-        } else if (!dynamic_delay)
-        {
-            min = config_delay;
-            max = config_delay;
-        }
+  // > 0 => Increase increase_window
+  int64_t expand_inc_window_on_miss = 0;
 
-        delay = clamp(delay + delta, min, max);
-    }
+  // Expontential decrease in case of missed frames
+  int32_t consecutive_decrease = 1;
 
-    void reset_increase_timer()
-    {
-        last_increase = get_current_time();
-    }
+  // Time of last frame
+  int64_t last_pageflip = -1; // -1 is invalid
 
-    static constexpr int64_t MIN_INCREASE_WINDOW = 200; // 200 ms
-    static constexpr int64_t MAX_INCREASE_WINDOW = 30'000; // 30s
-    int64_t increase_window = MIN_INCREASE_WINDOW;
-    int64_t last_increase   = 0;
+  int64_t refresh_nsec;
+  wf::option_wrapper_t<int> max_render_time{"core/max_render_time"};
+  wf::option_wrapper_t<bool> dynamic_delay{"workarounds/dynamic_repaint_delay"};
 
-    // > 0 => Increase increase_window
-    int64_t expand_inc_window_on_miss = 0;
-
-    // Expontential decrease in case of missed frames
-    int32_t consecutive_decrease = 1;
-
-    // Time of last frame
-    int64_t last_pageflip = -1; // -1 is invalid
-
-    int64_t refresh_nsec;
-    wf::option_wrapper_t<int> max_render_time{"core/max_render_time"};
-    wf::option_wrapper_t<bool> dynamic_delay{"workarounds/dynamic_repaint_delay"};
-
-    wf::wl_listener_wrapper on_present;
+  wf::wl_listener_wrapper on_present;
 };
 
-class wf::render_manager::impl
-{
-  public:
-    wf::wl_listener_wrapper on_frame;
-    wf::wl_timer<false> repaint_timer;
+class wf::render_manager::impl {
+public:
+  wf::wl_listener_wrapper on_frame;
+  wf::wl_timer<false> repaint_timer;
 
-    output_t *output;
-    wf::region_t swap_damage;
-    std::unique_ptr<swapchain_damage_manager_t> damage_manager;
-    std::unique_ptr<effect_hook_manager_t> effects;
-    std::unique_ptr<postprocessing_manager_t> postprocessing;
-    std::unique_ptr<depth_buffer_manager_t> depth_buffer_manager;
-    std::unique_ptr<repaint_delay_manager_t> delay_manager;
+  output_t *output;
+  wf::region_t swap_damage;
+  std::unique_ptr<swapchain_damage_manager_t> damage_manager;
+  std::unique_ptr<effect_hook_manager_t> effects;
+  std::unique_ptr<postprocessing_manager_t> postprocessing;
+  std::unique_ptr<depth_buffer_manager_t> depth_buffer_manager;
+  std::unique_ptr<repaint_delay_manager_t> delay_manager;
 
-    wf::option_wrapper_t<wf::color_t> background_color_opt;
-    std::unique_ptr<wf::render_pass_t> current_pass;
-    wf::option_wrapper_t<std::string> icc_profile;
+  wf::option_wrapper_t<wf::color_t> background_color_opt;
+  std::unique_ptr<wf::render_pass_t> current_pass;
+  wf::option_wrapper_t<std::string> icc_profile;
 
-    wlr_color_transform *get_color_transform()
-    {
-        return icc_color_transform;
-    }
+  wlr_color_transform *get_color_transform() { return icc_color_transform; }
 
-    impl(output_t *o) : output(o), env_allow_scanout(check_scanout_enabled())
-    {
-        damage_manager = std::make_unique<swapchain_damage_manager_t>(o);
-        effects = std::make_unique<effect_hook_manager_t>();
-        postprocessing = std::make_unique<postprocessing_manager_t>(o);
-        depth_buffer_manager = std::make_unique<depth_buffer_manager_t>();
-        delay_manager = std::make_unique<repaint_delay_manager_t>(o);
+  impl(output_t *o) : output(o), env_allow_scanout(check_scanout_enabled()) {
+    damage_manager = std::make_unique<swapchain_damage_manager_t>(o);
+    effects = std::make_unique<effect_hook_manager_t>();
+    postprocessing = std::make_unique<postprocessing_manager_t>(o);
+    depth_buffer_manager = std::make_unique<depth_buffer_manager_t>();
+    delay_manager = std::make_unique<repaint_delay_manager_t>(o);
 
-        on_frame.set_callback([&] (void*)
-        {
-            /* If the session is not active, don't paint.
-             * This is the case when e.g. switching to another tty */
-            if (wf::get_core().session && !wf::get_core().session->active)
-            {
-                return;
-            }
+    on_frame.set_callback([&](void *) {
+      /* If the session is not active, don't paint.
+       * This is the case when e.g. switching to another tty */
+      if (wf::get_core().session && !wf::get_core().session->active) {
+        return;
+      }
 
-            delay_manager->start_frame();
+      delay_manager->start_frame();
 
-            auto repaint_delay = delay_manager->get_delay();
-            // Leave a bit of time for clients to render, see
-            // https://github.com/swaywm/sway/pull/4588
-            if (repaint_delay < 1)
-            {
-                output->handle->frame_pending = false;
-                paint();
-            } else
-            {
-                output->handle->frame_pending = true;
-                repaint_timer.set_timeout(repaint_delay, [=] ()
-                {
-                    output->handle->frame_pending = false;
-                    paint();
-                });
-            }
-
-            frame_done_signal ev;
-            output->emit(&ev);
+      auto repaint_delay = delay_manager->get_delay();
+      // Leave a bit of time for clients to render, see
+      // https://github.com/swaywm/sway/pull/4588
+      if (repaint_delay < 1) {
+        output->handle->frame_pending = false;
+        paint();
+      } else {
+        output->handle->frame_pending = true;
+        repaint_timer.set_timeout(repaint_delay, [=]() {
+          output->handle->frame_pending = false;
+          paint();
         });
+      }
 
-        on_frame.connect(&output->handle->events.frame);
+      frame_done_signal ev;
+      output->emit(&ev);
+    });
 
-        background_color_opt.load_option("core/background_color");
-        background_color_opt.set_callback([=] ()
-        {
-            damage_manager->damage_whole_idle();
-        });
+    on_frame.connect(&output->handle->events.frame);
 
-        damage_manager->schedule_repaint();
+    background_color_opt.load_option("core/background_color");
+    background_color_opt.set_callback(
+        [=]() { damage_manager->damage_whole_idle(); });
 
-        auto section = wf::get_core().config_backend->get_output_section(output->handle);
-        icc_profile.load_option(section, "icc_profile");
-        icc_profile.set_callback([=] ()
-        {
-            reload_icc_profile();
-            damage_manager->damage_whole_idle();
-        });
+    damage_manager->schedule_repaint();
 
-        reload_icc_profile();
+    auto section =
+        wf::get_core().config_backend->get_output_section(output->handle);
+    icc_profile.load_option(section, "icc_profile");
+    icc_profile.set_callback([=]() {
+      reload_icc_profile();
+      damage_manager->damage_whole_idle();
+    });
+
+    reload_icc_profile();
+  }
+
+  wlr_color_transform *icc_color_transform = NULL;
+  wlr_buffer_pass_options pass_opts{};
+
+  void reload_icc_profile() {
+    if (icc_profile.value().empty()) {
+      set_icc_transform(nullptr);
+      return;
     }
 
-    wlr_color_transform *icc_color_transform = NULL;
-    wlr_buffer_pass_options pass_opts{};
-
-    void reload_icc_profile()
-    {
-        if (icc_profile.value().empty())
-        {
-            set_icc_transform(nullptr);
-            return;
-        }
-
-        if (!wf::get_core().is_vulkan())
-        {
-            LOGW("ICC profiles in core are only supported with the vulkan renderer. "
-                 "For GLES2, make sure to enable the vk-color-management plugin.");
-        }
-
-        auto path = std::filesystem::path{icc_profile.value()};
-        if (std::filesystem::is_regular_file(path))
-        {
-            // Read binary file into vector<char> buffer
-            std::ifstream file(icc_profile.value(), std::ios::binary);
-            std::vector<char> buffer((std::istreambuf_iterator<char>(file)),
-                std::istreambuf_iterator<char>());
-
-            auto transform = wlr_color_transform_init_linear_to_icc(buffer.data(), buffer.size());
-            if (!transform)
-            {
-                LOGE("Failed to load ICC transform from ", icc_profile.value());
-                set_icc_transform(nullptr);
-                return;
-            } else
-            {
-                LOGI("Loaded ICC transform from ", icc_profile.value(), " for output ", output->to_string());
-            }
-
-            set_icc_transform(transform);
-        }
+    if (!wf::get_core().is_vulkan()) {
+      LOGW("ICC profiles in core are only supported with the vulkan renderer. "
+           "For GLES2, make sure to enable the vk-color-management plugin.");
     }
 
-    void set_icc_transform(wlr_color_transform *transform)
-    {
-        if (icc_color_transform)
-        {
-            wlr_color_transform_unref(icc_color_transform);
-        }
+    auto path = std::filesystem::path{icc_profile.value()};
+    if (std::filesystem::is_regular_file(path)) {
+      // Read binary file into vector<char> buffer
+      std::ifstream file(icc_profile.value(), std::ios::binary);
+      std::vector<char> buffer((std::istreambuf_iterator<char>(file)),
+                               std::istreambuf_iterator<char>());
 
-        icc_color_transform = transform;
-    }
-
-    ~impl()
-    {
+      auto transform =
+          wlr_color_transform_init_linear_to_icc(buffer.data(), buffer.size());
+      if (!transform) {
+        LOGE("Failed to load ICC transform from ", icc_profile.value());
         set_icc_transform(nullptr);
+        return;
+      } else {
+        LOGI("Loaded ICC transform from ", icc_profile.value(), " for output ",
+             output->to_string());
+      }
+
+      set_icc_transform(transform);
+    }
+  }
+
+  void set_icc_transform(wlr_color_transform *transform) {
+    if (icc_color_transform) {
+      wlr_color_transform_unref(icc_color_transform);
     }
 
-    const bool env_allow_scanout;
-    static bool check_scanout_enabled()
-    {
-        const char *env_scanout = getenv("WAYFIRE_DISABLE_DIRECT_SCANOUT");
-        bool env_allow_scanout  = (env_scanout == nullptr) || (!strcmp(env_scanout, "0"));
-        if (!env_allow_scanout)
-        {
-            LOGC(SCANOUT, "Scanout disabled by environment variable.");
-        }
+    icc_color_transform = transform;
+  }
 
-        return env_allow_scanout;
+  ~impl() { set_icc_transform(nullptr); }
+
+  const bool env_allow_scanout;
+  static bool check_scanout_enabled() {
+    const char *env_scanout = getenv("WAYFIRE_DISABLE_DIRECT_SCANOUT");
+    bool env_allow_scanout =
+        (env_scanout == nullptr) || (!strcmp(env_scanout, "0"));
+    if (!env_allow_scanout) {
+      LOGC(SCANOUT, "Scanout disabled by environment variable.");
     }
 
-    int output_inhibit_counter = 0;
-    void add_inhibit(bool add)
-    {
-        output_inhibit_counter += add ? 1 : -1;
-        if (output_inhibit_counter == 0)
-        {
-            damage_manager->damage_whole_idle();
+    return env_allow_scanout;
+  }
 
-            wf::output_start_rendering_signal data;
-            data.output = output;
-            output->emit(&data);
-        }
+  int output_inhibit_counter = 0;
+  void add_inhibit(bool add) {
+    output_inhibit_counter += add ? 1 : -1;
+    if (output_inhibit_counter == 0) {
+      damage_manager->damage_whole_idle();
+
+      wf::output_start_rendering_signal data;
+      data.output = output;
+      output->emit(&data);
+    }
+  }
+
+  /* Actual rendering functions */
+
+  /**
+   * Try to directly scanout a view on the output, thereby skipping rendering
+   * entirely.
+   *
+   * @return True if scanout was successful, False otherwise.
+   */
+  bool do_direct_scanout() {
+    const bool can_scanout =
+        !output_inhibit_counter && effects->can_scanout() &&
+        postprocessing->can_scanout() &&
+        wlr_output_is_direct_scanout_allowed(output->handle) &&
+        (icc_color_transform == nullptr);
+
+    if (!can_scanout || !env_allow_scanout) {
+      return false;
     }
 
-    /* Actual rendering functions */
+    auto result = scene::try_scanout_from_list(
+        damage_manager->instance_manager->get_instances(), output);
+    return result == scene::direct_scanout::SUCCESS;
+  }
 
-    /**
-     * Try to directly scanout a view on the output, thereby skipping rendering
-     * entirely.
-     *
-     * @return True if scanout was successful, False otherwise.
-     */
-    bool do_direct_scanout()
-    {
-        const bool can_scanout = !output_inhibit_counter && effects->can_scanout() &&
-            postprocessing->can_scanout() && wlr_output_is_direct_scanout_allowed(output->handle) &&
-            (icc_color_transform == nullptr);
+  /**
+   * Return the swap damage if called from overlay or postprocessing
+   * effect callbacks or empty region otherwise.
+   */
+  wf::region_t get_swap_damage() { return swap_damage; }
 
-        if (!can_scanout || !env_allow_scanout)
-        {
-            return false;
-        }
+  /**
+   * Render an output. Either calls the built-in renderer, or the render hook
+   * of a plugin
+   *
+   * @return The swap damage in buffer-local coordinates.
+   */
+  wf::region_t start_output_pass(
+      std::unique_ptr<swapchain_damage_manager_t::frame_object_t> &next_frame) {
+    render_pass_params_t params;
+    params.instances = &damage_manager->instance_manager->get_instances();
 
-        auto result = scene::try_scanout_from_list(
-            damage_manager->instance_manager->get_instances(), output);
-        return result == scene::direct_scanout::SUCCESS;
+    params.target = postprocessing->get_target_framebuffer().translated(
+        wf::origin(output->get_layout_geometry()));
+    params.damage = damage_manager->get_scheduled_damage(params.target);
+
+    params.background_color = background_color_opt;
+    params.reference_output = this->output;
+    params.renderer = output->handle->renderer;
+    params.flags = RPASS_CLEAR_BACKGROUND | RPASS_EMIT_SIGNALS;
+
+    pass_opts.timer = NULL; // TODO: do we care about this? could be useful for
+                            // dynamic frame scheduling
+    pass_opts.color_transform = icc_color_transform;
+    params.pass_opts = &pass_opts;
+    this->current_pass = std::make_unique<render_pass_t>(params);
+
+    auto total_damage = current_pass->run_partial();
+    if (runtime_config.damage_debug) {
+      /* Clear the screen to yellow, so that the repainted parts are visible */
+      wf::region_t yellow = params.target.geometry;
+      yellow ^= total_damage;
+
+      total_damage |= params.target.geometry;
+      current_pass->clear(yellow, {1, 1, 0, 1});
     }
 
-    /**
-     * Return the swap damage if called from overlay or postprocessing
-     * effect callbacks or empty region otherwise.
-     */
-    wf::region_t get_swap_damage()
-    {
-        return swap_damage;
+    // Transform to buffer-local damage
+    total_damage =
+        params.target.framebuffer_region_from_geometry_region(total_damage);
+    total_damage &= damage_manager->get_buffer_extents();
+    return total_damage;
+  }
+
+  void update_bound_output(wlr_buffer *buffer) {
+    /* Make sure the default buffer has enough size */
+    postprocessing->allocate(output->handle->width, output->handle->height);
+    postprocessing->set_current_buffer(buffer);
+
+    if (wf::get_core().is_gles2()) {
+      const auto &default_fb = postprocessing->get_target_framebuffer();
+      GLuint default_fb_id = gles::ensure_render_buffer_fb_id(default_fb);
+      depth_buffer_manager->ensure_depth_buffer(default_fb_id,
+                                                default_fb.get_size().width,
+                                                default_fb.get_size().height);
+    }
+  }
+
+  void unset_bound_output() {
+    depth_buffer_manager->frame_done();
+    postprocessing->set_current_buffer(nullptr);
+  }
+
+  /**
+   * Repaints the whole output, includes all effects and hooks
+   */
+  void paint() {
+    effects->run_effects(OUTPUT_EFFECT_PRE);
+    effects->run_effects(OUTPUT_EFFECT_DAMAGE);
+
+    if (do_direct_scanout()) {
+      return;
     }
 
-    /**
-     * Render an output. Either calls the built-in renderer, or the render hook
-     * of a plugin
-     *
-     * @return The swap damage in buffer-local coordinates.
-     */
-    wf::region_t start_output_pass(
-        std::unique_ptr<swapchain_damage_manager_t::frame_object_t>& next_frame)
-    {
-        render_pass_params_t params;
-        params.instances = &damage_manager->instance_manager->get_instances();
-
-        params.target = postprocessing->get_target_framebuffer().translated(
-            wf::origin(output->get_layout_geometry()));
-        params.damage = damage_manager->get_scheduled_damage(params.target);
-
-        params.background_color = background_color_opt;
-        params.reference_output = this->output;
-        params.renderer = output->handle->renderer;
-        params.flags    = RPASS_CLEAR_BACKGROUND | RPASS_EMIT_SIGNALS;
-
-        pass_opts.timer = NULL; // TODO: do we care about this? could be useful for dynamic frame scheduling
-        pass_opts.color_transform = icc_color_transform;
-        params.pass_opts   = &pass_opts;
-        this->current_pass = std::make_unique<render_pass_t>(params);
-
-        auto total_damage = current_pass->run_partial();
-        if (runtime_config.damage_debug)
-        {
-            /* Clear the screen to yellow, so that the repainted parts are visible */
-            wf::region_t yellow = params.target.geometry;
-            yellow ^= total_damage;
-
-            total_damage |= params.target.geometry;
-            current_pass->clear(yellow, {1, 1, 0, 1});
-        }
-
-        // Transform to buffer-local damage
-        total_damage  = params.target.framebuffer_region_from_geometry_region(total_damage);
-        total_damage &= damage_manager->get_buffer_extents();
-        return total_damage;
+    auto next_frame = damage_manager->start_frame();
+    if (!next_frame) {
+      return;
     }
 
-    void update_bound_output(wlr_buffer *buffer)
-    {
-        /* Make sure the default buffer has enough size */
-        postprocessing->allocate(output->handle->width, output->handle->height);
-        postprocessing->set_current_buffer(buffer);
+    update_bound_output(next_frame->buffer);
+    this->swap_damage = start_output_pass(next_frame);
 
-        if (wf::get_core().is_gles2())
-        {
-            const auto& default_fb = postprocessing->get_target_framebuffer();
-            GLuint default_fb_id   = gles::ensure_render_buffer_fb_id(default_fb);
-            depth_buffer_manager->ensure_depth_buffer(default_fb_id,
-                default_fb.get_size().width, default_fb.get_size().height);
-        }
+    effects->run_effects(OUTPUT_EFFECT_OVERLAY);
+    if (output_inhibit_counter) {
+      current_pass->clear(current_pass->get_target().geometry, {0, 0, 0, 1});
     }
 
-    void unset_bound_output()
-    {
-        depth_buffer_manager->frame_done();
-        postprocessing->set_current_buffer(nullptr);
+    current_pass->submit();
+    current_pass.reset();
+
+    effects->run_effects(OUTPUT_EFFECT_PASS_DONE);
+
+    if (postprocessing->post_effects.size()) {
+      swap_damage |= damage_manager->get_buffer_extents();
     }
 
-    /**
-     * Repaints the whole output, includes all effects and hooks
-     */
-    void paint()
-    {
-        /* Part 1: frame setup: query damage, etc. */
-        effects->run_effects(OUTPUT_EFFECT_PRE);
-        effects->run_effects(OUTPUT_EFFECT_DAMAGE);
+    postprocessing->run_post_effects();
 
-        if (do_direct_scanout())
-        {
-            // Yet another optimization: if we can directly scanout, we should
-            // stop the rest of the repaint cycle.
-            return;
-        }
+    damage_manager->swap_buffers(std::move(next_frame), swap_damage);
 
-        auto next_frame = damage_manager->start_frame();
-        if (!next_frame)
-        {
-            // Optimization: the output doesn't need a new frame (so isn't damaged), so we can
-            // just skip the whole repaint
-            delay_manager->skip_frame();
-            return;
-        }
+    unset_bound_output();
+    swap_damage.clear();
+    post_paint();
+  }
 
-        /* Part 2: call the renderer, which sets swap_damage and draws the scenegraph */
-        update_bound_output(next_frame->buffer);
-        this->swap_damage = start_output_pass(next_frame);
-
-        /* Part 3: overlay effects */
-        effects->run_effects(OUTPUT_EFFECT_OVERLAY);
-        if (output_inhibit_counter)
-        {
-            current_pass->clear(current_pass->get_target().geometry, {0, 0, 0, 1});
-        }
-
-        /* Part 4: we are done with the main scene. Submit the main render pass. */
-        const bool pass_status = current_pass->submit();
-        current_pass.reset();
-        if (!pass_status)
-        {
-            LOGE("Failed to submit render pass!");
-            wlr_buffer_unlock(next_frame->buffer);
-            return;
-        }
-
-        effects->run_effects(OUTPUT_EFFECT_PASS_DONE);
-
-        /* Part 5: finalize the scene: postprocessing effects */
-        if (postprocessing->post_effects.size())
-        {
-            swap_damage |= damage_manager->get_buffer_extents();
-        }
-
-        postprocessing->run_post_effects();
-
-        /* Part 6: render sw cursors We render software cursors after everything else
-         * for consistency with hardware cursor planes */
-        render_sw_cursors(next_frame.get());
-
-        /* Part 7: finalize frame: swap buffers, send frame_done, etc */
-        damage_manager->swap_buffers(std::move(next_frame), swap_damage);
-
-        unset_bound_output();
-        swap_damage.clear();
-        post_paint();
+  void
+  render_sw_cursors(swapchain_damage_manager_t::frame_object_t *next_frame) {
+    auto sw_cursor_pass = wlr_renderer_begin_buffer_pass(
+        output->handle->renderer, next_frame->buffer, nullptr);
+    if (!sw_cursor_pass) {
+      LOGE("Failed to render software cursors!");
+      return;
     }
 
-    void render_sw_cursors(swapchain_damage_manager_t::frame_object_t *next_frame)
-    {
-        auto sw_cursor_pass =
-            wlr_renderer_begin_buffer_pass(output->handle->renderer, next_frame->buffer, nullptr);
-        if (!sw_cursor_pass)
-        {
-            LOGE("Failed to render software cursors!");
-            return;
-        }
+    wlr_output_add_software_cursors_to_render_pass(
+        output->handle, sw_cursor_pass, swap_damage.to_pixman());
+    wlr_render_pass_submit(sw_cursor_pass);
+  }
 
-        wlr_output_add_software_cursors_to_render_pass(output->handle,
-            sw_cursor_pass, swap_damage.to_pixman());
-        wlr_render_pass_submit(sw_cursor_pass);
+  /**
+   * Execute post-paint actions.
+   */
+  void post_paint() {
+    effects->run_effects(OUTPUT_EFFECT_POST);
+    if (damage_manager->constant_redraw_counter) {
+      damage_manager->schedule_repaint();
     }
-
-    /**
-     * Execute post-paint actions.
-     */
-    void post_paint()
-    {
-        effects->run_effects(OUTPUT_EFFECT_POST);
-        if (damage_manager->constant_redraw_counter)
-        {
-            damage_manager->schedule_repaint();
-        }
-    }
+  }
 };
 
 scene::direct_scanout scene::try_scanout_from_list(
-    const std::vector<scene::render_instance_uptr>& instances,
-    wf::output_t *scanout)
-{
-    for (auto& ch : instances)
-    {
-        auto res = ch->try_scanout(scanout);
-        if (res != direct_scanout::SKIP)
-        {
-            return res;
-        }
+    const std::vector<scene::render_instance_uptr> &instances,
+    wf::output_t *scanout) {
+  for (auto &ch : instances) {
+    auto res = ch->try_scanout(scanout);
+    if (res != direct_scanout::SKIP) {
+      return res;
     }
+  }
 
-    return direct_scanout::SKIP;
+  return direct_scanout::SKIP;
 }
 
-void scene::compute_visibility_from_list(const std::vector<render_instance_uptr>& instances,
-    wf::output_t *output, wf::region_t& region, const wf::point_t& offset)
-{
-    region -= offset;
-    for (auto& ch : instances)
-    {
-        ch->compute_visibility(output, region);
-    }
+void scene::compute_visibility_from_list(
+    const std::vector<render_instance_uptr> &instances, wf::output_t *output,
+    wf::region_t &region, const wf::point_t &offset) {
+  region -= offset;
+  for (auto &ch : instances) {
+    ch->compute_visibility(output, region);
+  }
 
-    region += offset;
+  region += offset;
 }
 
-render_manager::render_manager(output_t *o) :
-    pimpl(new impl(o))
-{}
+render_manager::render_manager(output_t *o) : pimpl(new impl(o)) {}
 render_manager::~render_manager() = default;
 
-void render_manager::set_redraw_always(bool always)
-{
-    pimpl->damage_manager->set_redraw_always(always);
+void render_manager::set_redraw_always(bool always) {
+  pimpl->damage_manager->set_redraw_always(always);
 }
 
-wf::region_t render_manager::get_swap_damage()
-{
-    return pimpl->get_swap_damage();
+wf::region_t render_manager::get_swap_damage() {
+  return pimpl->get_swap_damage();
 }
 
-void render_manager::schedule_redraw()
-{
-    pimpl->damage_manager->schedule_repaint();
+void render_manager::schedule_redraw() {
+  pimpl->damage_manager->schedule_repaint();
 }
 
-void render_manager::add_inhibit(bool add)
-{
-    pimpl->add_inhibit(add);
+void render_manager::add_inhibit(bool add) { pimpl->add_inhibit(add); }
+
+void render_manager::add_effect(effect_hook_t *hook,
+                                output_effect_type_t type) {
+  pimpl->effects->add_effect(hook, type);
 }
 
-void render_manager::add_effect(effect_hook_t *hook, output_effect_type_t type)
-{
-    pimpl->effects->add_effect(hook, type);
+void render_manager::rem_effect(effect_hook_t *hook) {
+  pimpl->effects->rem_effect(hook);
 }
 
-void render_manager::rem_effect(effect_hook_t *hook)
-{
-    pimpl->effects->rem_effect(hook);
+void render_manager::add_post(post_hook_t *hook) {
+  pimpl->postprocessing->add_post(hook);
 }
 
-void render_manager::add_post(post_hook_t *hook)
-{
-    pimpl->postprocessing->add_post(hook);
+void render_manager::rem_post(post_hook_t *hook) {
+  pimpl->postprocessing->rem_post(hook);
 }
 
-void render_manager::rem_post(post_hook_t *hook)
-{
-    pimpl->postprocessing->rem_post(hook);
+wf::region_t render_manager::get_scheduled_damage() {
+  return pimpl->damage_manager->get_scheduled_damage(get_target_framebuffer());
 }
 
-wf::region_t render_manager::get_scheduled_damage()
-{
-    return pimpl->damage_manager->get_scheduled_damage(get_target_framebuffer());
+void render_manager::damage_whole() { pimpl->damage_manager->damage_whole(); }
+
+void render_manager::damage_whole_idle() {
+  pimpl->damage_manager->damage_whole_idle();
 }
 
-void render_manager::damage_whole()
-{
-    pimpl->damage_manager->damage_whole();
+void render_manager::damage(const wlr_box &box, bool repaint) {
+  auto fb = pimpl->postprocessing->get_target_framebuffer();
+  pimpl->damage_manager->damage_buffer(
+      fb.framebuffer_box_from_geometry_box(box), repaint);
 }
 
-void render_manager::damage_whole_idle()
-{
-    pimpl->damage_manager->damage_whole_idle();
+void render_manager::damage(const wf::region_t &region, bool repaint) {
+  auto fb = pimpl->postprocessing->get_target_framebuffer();
+  pimpl->damage_manager->damage_buffer(
+      fb.framebuffer_region_from_geometry_region(region), repaint);
 }
 
-void render_manager::damage(const wlr_box& box, bool repaint)
-{
-    auto fb = pimpl->postprocessing->get_target_framebuffer();
-    pimpl->damage_manager->damage_buffer(fb.framebuffer_box_from_geometry_box(box), repaint);
+wlr_box render_manager::get_ws_box(wf::point_t ws) const {
+  return pimpl->damage_manager->get_ws_box(ws);
 }
 
-void render_manager::damage(const wf::region_t& region, bool repaint)
-{
-    auto fb = pimpl->postprocessing->get_target_framebuffer();
-    pimpl->damage_manager->damage_buffer(fb.framebuffer_region_from_geometry_region(region), repaint);
+wlr_color_transform *render_manager::get_color_transform() {
+  return pimpl->get_color_transform();
 }
 
-wlr_box render_manager::get_ws_box(wf::point_t ws) const
-{
-    return pimpl->damage_manager->get_ws_box(ws);
+wf::render_target_t render_manager::get_target_framebuffer() const {
+  return pimpl->postprocessing->get_target_framebuffer();
 }
 
-wlr_color_transform*render_manager::get_color_transform()
-{
-    return pimpl->get_color_transform();
+void render_manager::set_require_depth_buffer(bool require) {
+  return pimpl->depth_buffer_manager->set_required(require);
 }
 
-wf::render_target_t render_manager::get_target_framebuffer() const
-{
-    return pimpl->postprocessing->get_target_framebuffer();
+wf::render_pass_t *render_manager::get_current_pass() {
+  return pimpl->current_pass.get();
 }
 
-void render_manager::set_require_depth_buffer(bool require)
-{
-    return pimpl->depth_buffer_manager->set_required(require);
+void priv_render_manager_clear_instances(wf::render_manager *manager) {
+  manager->pimpl->damage_manager->instance_manager.reset();
 }
 
-wf::render_pass_t*render_manager::get_current_pass()
-{
-    return pimpl->current_pass.get();
-}
-
-void priv_render_manager_clear_instances(wf::render_manager *manager)
-{
-    manager->pimpl->damage_manager->instance_manager.reset();
-}
-
-void priv_render_manager_start_rendering(wf::render_manager *manager)
-{
-    manager->pimpl->damage_manager->start_rendering();
+void priv_render_manager_start_rendering(wf::render_manager *manager) {
+  manager->pimpl->damage_manager->start_rendering();
 }
 } // namespace wf
 
