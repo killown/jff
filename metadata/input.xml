@@ -33,7 +33,7 @@
 			<option name="kb_numlock_default_state" type="bool">
 				<_short>Numlock default state</_short>
 				<_long>Default numlock state when wayfire starts.</_long>
-				<default>false</default>
+				<default>true</default>
 			</option>
 			<option name="kb_capslock_default_state" type="bool">
 				<_short>Capslock default state</_short>
