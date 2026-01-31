@@ -49,20 +49,14 @@ else
   plugin_pch_dep = declare_dependency()
 endif
 
-wobbly_inc = include_directories('wobbly/')
 subdir('common')
 
 plugins = [
   'ipc',
   'protocols',
   'vswitch',
-  'wobbly',
   'grid',
-  'decor',
-  'animate',
-  'cube',
   'window-rules',
-  'blur',
   'tile',
   'wm-actions',
   'scale',

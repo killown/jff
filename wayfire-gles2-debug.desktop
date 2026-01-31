@@ -1,0 +1,7 @@
+[Desktop Entry]
+Name=Wayfire (GLES2) (Debug)
+Exec=/home/neo/Scripts/wayfire/wayfire.sh --gles2 --debug
+TryExec=wayfire
+Icon=
+Type=Application
+X-DesktopNames=Wayfire;wlroots

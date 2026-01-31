@@ -1,7 +1,0 @@
-[Desktop Entry]
-Name=Wayfire
-Exec=wayfire
-TryExec=wayfire
-Icon=
-Type=Application
-DesktopNames=Wayfire;wlroots

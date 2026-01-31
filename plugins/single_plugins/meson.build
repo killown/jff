@@ -1,11 +1,11 @@
 plugins = [
   'move', 'resize', 'command', 'autostart', 'vswipe', 'wrot', 'expo',
-  'switcher', 'fast-switcher', 'oswitch', 'place', 'invert',
-  'zoom', 'alpha', 'idle', 'extra-gestures', 'preserve-output',
+  'switcher', 'fast-switcher', 'oswitch', 'place', 
+  'alpha', 'extra-gestures', 'preserve-output',
   'wsets', 'xkb-bindings',
 ]
 
-all_include_dirs = [wayfire_api_inc, wayfire_conf_inc, plugins_common_inc, vswitch_inc, wobbly_inc, grid_inc, ipc_include_dirs]
+all_include_dirs = [wayfire_api_inc, wayfire_conf_inc, plugins_common_inc, vswitch_inc, grid_inc, ipc_include_dirs]
 if wlroots_features['vulkan_renderer']
   plugins += 'vk-color-management'
 endif
